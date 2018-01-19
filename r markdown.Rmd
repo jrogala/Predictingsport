@@ -1,0 +1,299 @@
+---
+title: "Predicting victory in chess"
+author: "Jimmy Rogala"
+date: "10/01/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Predicting sports results
+
+## Objective
+
+We want to be able to predict result in sports games. We will use a classic 1V1 sport and study the ELO ranking in order to be able to predict the outcome of the game.
+
+ELO is a well studied match ranking and win rate value are already theoriticaly known. The aim of this project is to be able to test and validate experimentaly the usage of the ELO ranking in order to predict outcome of match between 2 players.
+
+Lets get dataset of match played by chess player and reshape it with Python.
+
+The dataset come from <http://www.kingbase-chess.net> and looks like this:
+
+```{python python.reticulate = FALSE}
+with open("database/KingBase2017-A00-A39.pgn",'r') as f:
+  for i in range(20):
+    print(f.readline()[:-1])
+```
+
+
+## Reshape the data
+
+Lets reshape the data in order to make it compatible with r. We will use the standard csv and only get useful information: Players, Elo rating, and the result
+
+
+```{python python.reticulate = FALSE}
+import csv
+
+def update(s,wm,bm,res,we,be):
+    temp = ["" for i in range(9)]
+    temp[0] = wm
+    temp[1] = we
+    temp[2] = bm
+    temp[3] = be
+    temp[4] = str(int(we) - int(be))
+    temp[6] = str(int(we) + 30 - int(be))
+    temp[7] = str(int(we) * 1.01 - int(be))
+    if res=="1-0": 
+        #white won
+        temp[5] = "White"
+        temp[8] = 1
+        flag = True
+    elif res=="0-1":
+        #black won
+        temp[5] = "Black"
+        temp[8] = -1
+        flag = True
+    elif res=="1/2-1/2":
+        #draw
+        temp[5] = "Draw"
+        temp[8] = 0
+        flag = True
+    else:
+        print("Dropped one match because value is bad")
+        flag = False
+    if flag:
+        s.writerow(temp)
+    
+
+
+def parser(s,filename):
+    #get standardized pgn file
+    with open(filename,'r') as f:
+        print("Opening " + filename)
+        line = f.readline()
+        while line != "":
+            if line[0:7] == "[White ":
+                whiteman = line[8:-4]
+            elif line[0:7] == "[Black ":
+                blackman = line[8:-4]
+            elif line[0:8] == "[Result ":
+                result = line[9:-4]
+            elif line[0:10] == "[WhiteElo ":
+                whiteelo = line[11:-4]
+            elif line[0:10] == "[BlackElo ":
+                blackelo = line[11:-4]
+            elif line[0:11] == "[EventDate ":
+                update(s,whiteman,blackman,result,whiteelo,blackelo)
+            line = f.readline()
+        print("Closing " +filename)
+    
+
+def main():
+    s = csv.writer(open("chessgame.csv", "wb"))
+    parser(s,"database/KingBase2017-A00-A39.pgn")
+    parser(s,"database/KingBase2017-A40-A79.pgn")
+    parser(s,"database/KingBase2017-A80-A99.pgn")
+    parser(s,"database/KingBase2017-B00-B19.pgn")
+    parser(s,"database/KingBase2017-B20-B49.pgn")
+    parser(s,"database/KingBase2017-B50-B99.pgn")
+    parser(s,"database/KingBase2017-C00-C19.pgn")
+
+
+main()
+
+
+```
+
+
+In order to predict chess result, lets get information of matchs and load the dataset. We precomputed some value that will be usefull later on. 
+
+```{r Loading}
+library(ggplot2)
+chessgame <- read.csv("~/Documents/projet 4 scientmethodo/chessgame.csv", header=FALSE)
+colnames(chessgame) <- c("Black_player","Black_Elo","White_player","White_Elo","Elo_diff","Winner","CElo_diff","CElo_diff2","Winnernum")
+```
+
+Lets see some summary and information of the dataset
+```{r Summary}
+head(chessgame)
+summary(chessgame)
+```
+
+We can see that Black and White Elo start at 2000 because of dataset (no match from elo lower than 2000)
+
+We got a total of 1036773 chess matchs. 
+
+## Getting information
+
+Lets check first the proportion of victory and draw from black versus white. 
+
+```{r}
+plot(chessgame$Winner)
+```
+
+
+If we assume that each side get equally represented by every player, we can observe some inherent bias due to white having more chance of winning then black in chess.
+
+This is true because chess is a assymetrical game and first player is known to have a better chance in winning then the second player in this game.
+
+## ELO Distribution
+
+This is the ELO distribution for white and black players
+
+```{r Elo, echo=FALSE}
+hist(chessgame$Black_Elo)
+hist(chessgame$White_Elo)
+```
+
+They look very similar as predicted.
+Elo rating is a standard rating of player in chess. We will see if it is good enough in order to predict victory.
+
+## Trusting Elo
+
+```{r EloDiff}
+hist(chessgame$`Elo_diff`)
+```
+
+This is the value of white elo minus black elo.
+We can see that Elo is already trusted by player database: Most of the match take place within a close difference of Elo.
+
+
+## Testing the elo value
+
+```{r winner by elo diff}
+ggplot(data = chessgame,aes(Winner,Elo_diff)) + geom_point(alpha = 0.01)
+```
+
+We can't see lots of thing. Only that at huge difference, very few player win with a difference of 500 mmr. (where not a lots of match happen)
+
+Lets clear the data
+
+```{r better}
+ggplot(data = chessgame,aes(Winner,Elo_diff)) + geom_point(alpha = 0.01,
+                       size = 1.5,
+                       position = position_jitter(width = 0.4, height = 1)) + geom_boxplot(notch=TRUE)
+```
+
+Variance seems big, but the mean indicate that a player with lower elo will have a greater probability to lose agains't someone with a bigger elo. 
+
+Lets see when elo rating difference is high what happen (>300)
+
+```{r}
+diffval = 300
+elodiff <- subset(chessgame, Elo_diff > diffval | Elo_diff < -diffval)
+ggplot(data = elodiff,aes(Winner,Elo_diff)) + geom_jitter(width = 0.2,alpha=0.1)
+```
+Now with a big Elo difference
+```{r}
+diffval = 500
+elodiff <- subset(chessgame, Elo_diff > diffval | Elo_diff < -diffval)
+ggplot(data = elodiff,aes(Winner,Elo_diff)) + geom_jitter(width = 0.2)
+```
+
+
+We still get some win for the lower elo even if there is a 600 difference. But they are very rare compared to the win of the high elo player. 
+
+
+Lets see the win rate compared to mmr difference:
+```{r}
+library(dplyr)
+
+d <- chessgame %>%
+  mutate( elodiff = cut(Elo_diff ,breaks = 51)) %>% 
+  group_by(elodiff) %>%
+  summarise( Winnermean = mean(Winnernum) )
+
+ggplot(data=d,aes(x = elodiff,y=Winnermean)) + geom_point() + geom_hline(yintercept=0) + geom_vline(xintercept = 26) + theme(axis.text.x = element_text(size=8, angle=70))
+```
+The crossing line refers to the 0 axis and 0 mmr differences 
+
+
+Some interesting thing to see is the first point of the graph. This could be due to people throwing a game for diverse reason. Some article on internet like <https://www.washingtonpost.com/news/worldviews/wp/2017/02/02/this-chess-grandmaster-was-tired-of-being-paired-against-women-so-she-just-threw-a-game/?utm_term=.1cec5de6d46e> can explaing those loss.
+There are not a lots of game at this rank interval (in this case only one).
+
+We can conclude that when the difference of elo rating is increasing, you increase the probability of winning at chess.
+
+One problem is the inherent bias of the white player playing first. We can see that in the graph the 0 mmr difference is not equal to the 50/50 winning chances.
+
+
+## Trying to remove the inherent bias
+Lets try to remove the inherent bias that we saw before.
+
+We can try a simple thing: Correcting mmr by adding some ELO point to white player.
+Lets try with a constant value to see some difference.
+The constant value is choosed arbitrary.
+```{r}
+summary(chessgame$CElo_diff)
+ggplot(data = chessgame,aes(Winner,CElo_diff)) + geom_point(alpha = 0.01,
+                       size = 1.5,
+                       position = position_jitter(width = 0.4, height = 1)) + geom_boxplot(notch=TRUE)
+```
+
+Lets check the extremity
+```{r}
+diffval = 500
+celodiff <- subset(chessgame, CElo_diff > diffval | CElo_diff < -diffval)
+ggplot(data = celodiff,aes(Winner,CElo_diff)) + geom_jitter(width = 0.2)
+```
+
+Not a big difference.
+
+Last graph for this case:
+
+```{r}
+library(dplyr)
+
+d2 <- chessgame %>%
+  mutate( elodiff = cut(CElo_diff ,breaks = 51)) %>% 
+  group_by(elodiff) %>%
+  summarise( Winnermean = mean(Winnernum) )
+
+ggplot(data=d2,aes(x = elodiff,y=Winnermean)) + geom_point() + geom_hline(yintercept=0) + geom_vline(xintercept = 24) + theme(axis.text.x = element_text(size=8, angle=70))
+```
+
+# Correcting elo: Multiplying white elo by a fix value?
+Now lets assume the difference of elo is linear. 
+
+One idea could be to multiply the Elo in order to center the winning rate with a 0 mmr difference
+```{r}
+summary(chessgame$CElo_diff2)
+ggplot(data = chessgame,aes(Winner,CElo_diff2)) + geom_point(alpha = 0.01,
+                       size = 1.5,
+                       position = position_jitter(width = 0.4, height = 1)) + geom_boxplot(notch=TRUE)
+```
+and the extremity:
+```{r}
+diffval = 600
+celodiff2 <- subset(chessgame, CElo_diff2 > diffval | CElo_diff2 < -diffval)
+ggplot(data = celodiff2,aes(Winner,CElo_diff2)) + geom_jitter(width = 0.2)
+```
+We get the same behaviour then before.
+
+```{r}
+library(dplyr)
+
+d3 <- chessgame %>%
+  mutate( elodiff = cut(CElo_diff2 ,breaks = 51)) %>% 
+  group_by(elodiff) %>%
+  summarise( Winnermean = mean(Winnernum) )
+
+ggplot(data=d3,aes(x = elodiff,y=Winnermean)) + geom_point() + geom_hline(yintercept=0) + geom_vline(xintercept = 24) + theme(axis.text.x = element_text(size=8, angle=70))
+```
+
+
+## What to do after 
+
+Find out more difference between constant correction and linear correction 
+
+We did find out strong correlation between ELO difference and winning probabilities. Finding out the trust interval could enhance the result.
+
+We could also tried to apply it in other sports: Chess is a simple 1v1 game where you can win, draw or lose. Trying to compute this ELO rating in more complex games (like collective game for exemple) could lead to different result.
+
+
+## Limitation 
+
+Some limitation of our work: 
+
+We assumed the Elo rating of a player is fixed. In reality it always changes every match. This limitation is not a huge problem as after some amount of matchs, the Elo rating will converge into the "real" Elo Rating of the player.
